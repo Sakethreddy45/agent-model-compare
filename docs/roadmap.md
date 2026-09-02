@@ -3,7 +3,7 @@
 One phase at a time. A phase is done when its pass condition holds, not when
 the code looks finished. Do not build ahead.
 
-**Current phase: 1**
+**Current phase: 3**
 
 ---
 
@@ -13,12 +13,12 @@ the code looks finished. Do not build ahead.
 
 Protects invariant 3 only. Not latency, not fixtures, not overlays.
 
-- [ ] `Lane` (frozen), `Role` enum, `current_lane()`, `lane_scope()`
-- [ ] `Isolation` enum (PASSTHROUGH, BLOCK only), `ToolPolicy` with `source`
-- [ ] `classify()` with precedence: config > MCP annotations > HTTP method > deny
-- [ ] `report()` printing the classification table with reasons
-- [ ] `wrap()` handling both sync and async tools
-- [ ] Synthetic success stub — never raises
+- [x] `Lane` (frozen), `Role` enum, `current_lane()`, `lane_scope()`
+- [x] `Isolation` enum (PASSTHROUGH, BLOCK only), `ToolPolicy` with `source`
+- [x] `classify()` with precedence: config > MCP annotations > HTTP method > deny
+- [x] `report()` printing the classification table with reasons
+- [x] `wrap()` handling both sync and async tools
+- [x] Synthetic success stub — never raises
 
 **Pass condition:** one primary and two shadow lanes run concurrently against
 an agent with `read_docs` (annotated read-only), `send_email` (annotated
@@ -37,10 +37,10 @@ accidents happen. Decide deliberately whether `lane_scope` nesting is allowed.
 
 `runner.py`
 
-- [ ] `@shadow` decorator wrapping any agent callable
-- [ ] Primary awaited inline; shadows as background tasks
-- [ ] Per-shadow exception guard
-- [ ] Fractional sampling
+- [x] `@shadow` decorator wrapping any agent callable
+- [x] Primary awaited inline; shadows as background tasks
+- [x] Per-shadow exception guard
+- [x] Fractional sampling
 
 **Pass condition:** primary latency with 2 shadows is within a few ms of solo.
 A shadow raising mid-run leaves the primary's result and the other shadow
@@ -126,3 +126,24 @@ writeup, and the writeup is worth more than the code.
   `_client.send`. Correct hook is `_build_request`.
 - Bare `run_in_executor` loses contextvars silently; `asyncio.to_thread` copies
   context automatically. The leak depends on how the thread was spawned.
+- The `@shadow` decorator does not thread a `model` kwarg through the wrapped
+  call. Each lane's model lives on the `Lane` object; phase 3's provider
+  adapter is expected to read it via `current_lane().model` inside the tool
+  boundary rather than the runner passing it explicitly. Keeps the agent
+  callable's signature untouched by shadowing.
+- `asyncio.create_task` copies the current context at creation, so entering
+  `lane_scope` inside the spawned coroutine (not before `create_task`) is
+  both correct and sufficient — no `copy_context()` needed for the task-based
+  path. That's a phase 3 concern for the thread-pool path only.
+- `@shadow`'s `sample_rate` defaults to 1.0, not some cost-saving fraction.
+  This tool's entire premise is comparison grounded in the developer's real
+  traffic; silently sampling by default would mean early users get partial,
+  possibly misleading coverage without ever having asked for the tradeoff.
+  Reducing spend via sampling is opt-in, set explicitly by whoever decides
+  they want it.
+- Added `enabled` and `AMC_DISABLED` as two switches for the same off state
+  (checked with OR, either can disable) rather than picking one - a code-level
+  default for normal operation, plus an env var so shadowing can be killed in
+  a running deployment with no redeploy. Disabling still runs the primary
+  under its own `lane_scope`; skipping that too would leave the lane unset
+  and trip invariant 4, blocking the primary's own real side effects.
