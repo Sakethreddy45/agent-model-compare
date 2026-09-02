@@ -1,0 +1,25 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Project
+*.db
+*.sqlite3
+.env
+recordings/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
