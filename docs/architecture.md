@@ -61,10 +61,17 @@ without re-running the spikes.
 
 **The OpenAI SDK hook is `_build_request`.** Patch `client._build_request` and
 rewrite `options.json_data["model"]`. At that point it is still a plain dict —
-no header or content-length juggling. Verified on async and streaming paths.
+no header or content-length juggling. Verified on async and streaming paths,
+and end-to-end against a real client (`httpx2.MockTransport`, see phase 3
+integration tests) covering both request serialization and response
+deserialization.
 
 > Patching `client._client.request` does **nothing** — the SDK calls
 > `_client.send`. A wrong hook fails silently with no error.
+
+> Like Anthropic, this SDK also vendors httpx as `httpx2`. A custom
+> `http_client=` must be an `httpx2.Client`/`httpx2.AsyncClient` — a plain
+> `httpx.Client` fails the SDK's own `isinstance` check.
 
 **Anthropic's SDK hook is the same shape as OpenAI's.** Both are
 Stainless-generated, and it shows: `client._build_request` is defined once on

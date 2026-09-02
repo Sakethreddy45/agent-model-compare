@@ -198,3 +198,11 @@ writeup, and the writeup is worth more than the code.
   `.invoke()`. Documented on each adapter rather than special-cased in code -
   no LangChain import in `amc`, and those attribute names are exactly the
   kind of internal surface that moves without a deprecation notice.
+- Added `tests/test_provider_integration.py`: one test per provider, each
+  `pytest.importorskip`-ing its own SDK, driving a real client through
+  `httpx.MockTransport` (Gemini) or the vendored `httpx2.MockTransport`
+  (OpenAI/Anthropic - a plain `httpx.Client` fails their `isinstance` check
+  on `http_client=`). Verified by running them against a scratch venv with
+  the real SDKs installed (3 passed) and against the tracked `.venv` without
+  them (3 skipped, 35 other tests unaffected) - neither `pyproject.toml` nor
+  the tracked venv were touched.
