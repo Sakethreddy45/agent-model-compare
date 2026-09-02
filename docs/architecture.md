@@ -66,6 +66,49 @@ no header or content-length juggling. Verified on async and streaming paths.
 > Patching `client._client.request` does **nothing** — the SDK calls
 > `_client.send`. A wrong hook fails silently with no error.
 
+**Anthropic's SDK hook is the same shape as OpenAI's.** Both are
+Stainless-generated, and it shows: `client._build_request` is defined once on
+a shared `BaseClient` and used by both `Anthropic` and `AsyncAnthropic`, so one
+patch covers sync and async. `options.json_data["model"]` is a plain dict key
+there too — rewrite it the same way. Dispatch is `self._client.send(request)`,
+same trap as OpenAI. Verified on sync, async, and `messages.stream()`.
+One wrinkle only: the SDK vendors its own httpx fork under the import name
+`httpx2` (to dodge version clashes), so don't assume `isinstance(x,
+httpx.Request)` when handling the return value — duck-type or use the SDK's
+own re-exports instead.
+
+**Gemini's SDK hook exists but overrides a different thing.** `google-genai`
+is hand-built, not Stainless-generated, and `BaseApiClient._build_request(
+http_method, path, request_dict, http_options)` is transport-agnostic — it
+returns a plain `HttpRequest` dataclass *before* the SDK picks httpx vs. its
+optional `aiohttp` fallback for async, so the hook works no matter which
+transport ends up handling the call. `Client._api_client` is shared with
+`Client.aio`, so one instance-level patch covers sync, async, and both
+streaming variants.
+
+> **The model is not in the JSON body for `generateContent`.** It's
+> interpolated into the URL path (`models/{model}:generateContent`) before
+> `_build_request` even runs; the transient `request_dict["_url"]["model"]`
+> that produced it is deleted by `_build_request` itself. Overriding the model
+> means rewriting the `path` string argument, not a body dict key — confirmed
+> by capturing the real outgoing URL. A generic adapter that only knows how to
+> set `body["model"]` silently no-ops here. See roadmap phase 3.
+
+**LangChain's `ChatOpenAI`/`ChatAnthropic` route through the same
+`_build_request` hook — reached via a different attribute than the raw SDK.**
+`ChatOpenAI.client`/`.async_client` are `Completions`/`AsyncCompletions`
+*resource* objects with no `_build_request` — the raw client is
+`.root_client` / `.root_async_client`. `ChatAnthropic` exposes it more
+directly at `._client` / `._async_client`, but underscore-prefixed: treat it
+as internal API that can move without notice. Confirmed by patching each and
+intercepting a real `.invoke()`/`.ainvoke()` call before dispatch — both
+carried the rewritten model through to the outgoing request body. The
+`OpenAIAdapter`/`AnthropicAdapter` interface only ever takes the raw SDK
+client, never a framework wrapper; this is documented on each adapter, not
+special-cased, since LangChain isn't a dependency of this project and its
+internal attribute names are exactly the kind of thing that changes silently
+across versions.
+
 **LangGraph works, including parallel fan-out.** Three concurrent lanes through
 `ainvoke` isolate correctly inside parallel branches; 15 lanes produced no
 contextvar token errors.
