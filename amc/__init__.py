@@ -6,6 +6,13 @@ from .interceptor import wrap
 from .policy import Isolation, ToolPolicy, classify
 from .provenance import EventKind, LatencySource, ResponseSource
 from .recorder import Recorder
+from .report import (
+    DivergenceReport,
+    LaneReport,
+    Report,
+    build_report,
+    render_report,
+)
 from .runner import RunRecorder, shadow
 from .store import EventRow, LaneRow, QueryRow, SqliteStore, Store
 from .virtual import (
@@ -57,4 +64,9 @@ __all__ = [
     "render",
     "analysis",
     "load_query",
+    "Report",
+    "LaneReport",
+    "DivergenceReport",
+    "build_report",
+    "render_report",
 ]

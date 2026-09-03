@@ -3,7 +3,7 @@
 One phase at a time. A phase is done when its pass condition holds, not when
 the code looks finished. Do not build ahead.
 
-**Current phase: 7**
+**Current phase: 7 (complete) — v1 scope done**
 
 ---
 
@@ -194,9 +194,31 @@ table, etc.).
 
 ## Phase 7 — Report
 
-- [ ] Deterministic metrics first
-- [ ] Fidelity summary
-- [ ] Divergence rendered descriptively, never as a score
+`amc/report.py` — pure over a `QueryRun`, no I/O, no LLM. Sits at the top of
+the dependency chain (`analysis` → `report`); nothing imports it.
+
+- [x] `build_report(run) -> Report` — structured, per-lane `LaneReport`
+      (tokens / cost / latency / efficiency / fidelity) plus per-shadow
+      `DivergenceReport`. `render_report(run) -> str` renders it.
+- [x] Section 1, deterministic metrics first: cost (recomputed at read time
+      from `price_version`, never stored; unpriced flagged not guessed),
+      latency (measured and measured+substituted as separate columns, never
+      one blended figure), efficiency (steps, loops, retries), and a
+      `vs primary` line of measured deltas labelled "not a quality ranking".
+- [x] Section 2, fidelity summary: the phase 5 `render()` block per lane; a
+      lane below the fidelity threshold is rendered but named in the roster
+      as excluded from the headline comparison. Threshold is a kwarg.
+- [x] Section 3, divergence, descriptive only: the `divergence_sentence`
+      verbatim (naming the node and the two tools), tool-set Jaccard as a
+      similarity fraction, only-A / only-B tools, argument agreement as a
+      count, and the four match-mode booleans. No score, no ranking. Section
+      carries the framing-rule caveat. No judgement section exists.
+
+**Pass condition:** the three sections render in that fixed order from a
+hand-built fixture DB, every figure traceable to the phase 6 metric it came
+from; the divergence text contains no `%`; a low-fidelity lane is flagged and
+excluded; primary-only and shadow-only runs still render. Met:
+`tests/test_report.py`.
 
 ---
 
@@ -368,3 +390,34 @@ writeup, and the writeup is worth more than the code.
   `incomplete=True` and still returns a (partial, lower-bound) cost rather
   than silently understating or refusing. Null stays distinct from zero all
   the way through the metric.
+- Phase 7: the report is a renderer, not a metric — `build_report` /
+  `render_report` only orchestrate phase 5–6 functions, so there was nothing
+  new to compute and nothing that could disagree with `test_analysis.py`.
+  Kept it that way deliberately: a figure in the report that isn't a direct
+  echo of a phase 6 result is a place for the two to drift.
+- Phase 7: split the sections as per-lane facts (1) vs pairwise comparison
+  (3), not as "tool selection metrics" vs "everything else". Tool-set Jaccard
+  is listed under algorithmic metrics in metrics.md but it's a divergence
+  descriptor, so it renders in section 3 next to the divergence sentence,
+  labelled a similarity fraction (`0.20`, not `20%`) so it doesn't read as a
+  score. The roadmap's three bullets (metrics / fidelity / divergence) are
+  the section order; the framing rule decides what a "metric" may look like.
+- Phase 7: added a `vs primary` line of measured deltas (cost %, latency %,
+  step count) — the product question is "cut cost without losing behaviour",
+  and side-by-side absolutes bury that. Guarded so a term only prints when
+  both lanes have the number, labelled "not a quality ranking", and a
+  low-fidelity shadow's line is tagged so the delta isn't taken at face
+  value. Deltas on *trajectory* stay banned — those go in section 3 as prose.
+- Phase 7: a `fidelity_threshold` kwarg on both entry points rather than a
+  constant. The exclusion decision (`is_low_fidelity`) already lived in
+  phase 5; the report just surfaces which lanes it caught, once in the lane
+  roster and again as the `-> LOW FIDELITY` line inside each fidelity block.
+- Phase 7: null token / latency counts render as `—`, zero renders as `0` —
+  the "null ≠ zero" rule has to survive into the printed table too, or a
+  provider that reported nothing looks like a free call. A substituted-only
+  lane shows `—` for measured p50/p95, never a fabricated `0`.
+- Phase 7: no judgement section, and the word "judgement" was scrubbed from
+  the rendered output (the `vs primary` caption said "not a quality
+  judgement" first) so a grep for it over a report comes back empty — the
+  judge layer is deferred and lives in its own table for exactly this
+  reason.
