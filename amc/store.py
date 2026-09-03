@@ -3,36 +3,25 @@ from __future__ import annotations
 import sqlite3
 import threading
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import Protocol, Sequence
 
 from .context import LaneStatus, Role
 from .policy import Isolation
+from .provenance import EventKind, LatencySource, ResponseSource
 
 # The store is the seam between the recorder and whatever holds the data.
 # SQLite for v1, Postgres later. The recorder depends only on the `Store`
 # protocol below, never on this module's concrete class - swapping the backend
 # must not touch recorder.py.
+#
+# EventKind / LatencySource / ResponseSource live in amc.provenance; re-exported
+# here so existing `from amc.store import ...` call sites keep working.
 
-
-class EventKind(str, Enum):
-    LLM = "llm"
-    TOOL = "tool"
-
-
-class LatencySource(str, Enum):
-    MEASURED = "measured"    # timed directly on this call
-    REPLAYED = "replayed"    # the primary's observed latency for the same call
-    SAMPLED = "sampled"      # drawn from a fitted per-tool distribution
-    MEDIAN = "median"        # per-tool median fallback, primary never made this call
-
-
-class ResponseSource(str, Enum):
-    REAL = "real"
-    FIXTURE = "fixture"
-    SCHEMA = "schema"
-    TEMPLATE = "template"
+__all__ = [
+    "EventKind", "LatencySource", "ResponseSource",
+    "QueryRow", "LaneRow", "EventRow", "Store", "SqliteStore",
+]
 
 
 # --- rows -------------------------------------------------------------------

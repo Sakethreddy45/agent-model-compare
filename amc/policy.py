@@ -12,7 +12,10 @@ from enum import Enum
 
 class Isolation(str, Enum):
     PASSTHROUGH = "passthrough"   # shadows may execute for real
-    BLOCK = "block"               # shadows may not
+    VIRTUAL = "virtual"          # shadows run against the virtual tool layer
+    BLOCK = "block"               # shadows may not run at all
+
+    # PARTITION / DRY_RUN from docs/virtual-tool-layer.md are not built yet.
 
 
 @dataclass(frozen=True)

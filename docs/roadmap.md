@@ -3,7 +3,7 @@
 One phase at a time. A phase is done when its pass condition holds, not when
 the code looks finished. Do not build ahead.
 
-**Current phase: 5**
+**Current phase: 6**
 
 ---
 
@@ -124,9 +124,37 @@ from the store alone.
 Per @docs/virtual-tool-layer.md. Build in that doc's order: fixtures →
 latency replay → overlay → fidelity accounting.
 
+`amc/virtual/` (`fixtures`, `schema`, `latency`, `overlay`, `dispatch`),
+`amc/fidelity.py`, `amc/provenance.py`.
+
+- [x] Fixtures: `FixtureStore` keyed by `(tool, normalise_args(...))`; the
+      primary's real calls captured through the interceptor, shadows served
+      from them. `virtual` isolation mode, opted in via config.
+- [x] Response resolution: overlay -> fixture -> schema synthesis
+      (`outputSchema`) -> declared template -> bare stub, each marked with its
+      `ResponseSource`.
+- [x] Latency replay, **strategy (a) only** — the primary's own observed ms
+      for the exact call, `latency_source = replayed`. No distribution fitting,
+      no median fallback (build order step 6).
+- [x] Overlay: per-lane copy-on-write. Reads check the delta then fall
+      through; writes land in the delta; `discard_overlay` on lane teardown,
+      wired into `runner`. Lane-scoped synthetic ids for ungrounded writes.
+- [x] Fidelity accounting: `summarise()` / `render()` over stored tool
+      events - real vs fixture vs schema vs stub, measured vs substituted
+      latency, contamination. A destructive tool served ungrounded increments
+      a per-lane divergence counter in the recorder; past the threshold the
+      lane gets `contaminated_at_step`.
+
 **Pass condition:** a shadow calls `create_user` then `get_user` and sees its
 own user. Lane latency is within a tolerance of the primary's for the same
-tool sequence. Fidelity summary renders.
+tool sequence. Fidelity summary renders. Met: `tests/test_virtual.py`
+(`test_shadow_calls_create_then_get_and_sees_its_own_user`,
+`test_lane_tool_latency_within_tolerance_of_primary_for_same_sequence`) and
+`tests/test_fidelity.py`.
+
+**Not built (later phases):** log-normal latency fitting, error injection
+(step 6, opt-in), `partition` / `dry_run` isolation modes, an
+overlay-over-a-real-DB base (the base defaults to empty).
 
 ---
 
@@ -251,3 +279,48 @@ writeup, and the writeup is worth more than the code.
   the real SDKs installed (3 passed) and against the tracked `.venv` without
   them (3 skipped, 35 other tests unaffected) - neither `pyproject.toml` nor
   the tracked venv were touched.
+- Phase 5: the dependency chain says `interceptor` is below `recorder`, but
+  the virtual layer is reached *from* the interceptor ("routes real vs
+  virtual"). Put `amc/virtual/` below the interceptor (imports only
+  `context`, `policy`, `provenance`) and had the interceptor import it. New
+  leaf `amc/provenance.py` holds `EventKind` / `LatencySource` /
+  `ResponseSource` so store, interceptor, virtual and recorder can all name a
+  source without depending on each other; `store.py` re-exports them for the
+  existing `from amc.store import ...` call sites.
+- Phase 5: `virtual` is opt-in per tool via `config={"tool": "virtual"}` -
+  `classify()` needed zero changes (`Isolation("virtual")` already resolves
+  the new enum member). The classifier default for annotated-destructive
+  stays `BLOCK`, so phase 1's containment test is untouched. The doc's
+  "virtual is the default for destructive" posture is a config choice, not
+  the built-in default.
+- Phase 5: kept latency strictly to strategy (a). A virtual call with no
+  matching fixture gets `latency_ms=None` / `latency_source=None` - we do not
+  fall back to a per-tool median (strategy c) or a fitted sample (b). Those
+  are build-order step 6. `amc/virtual/latency.py` exists as the seam and
+  currently does one thing.
+- Phase 5: writes always remap to a lane-scoped synthetic id
+  (`amc-{lane}-{n}`) *when the resolved response has no grounded id* (schema
+  default `""` / `0`). On a fixture hit the real id is kept, so a later read
+  with the same args still matches the read's fixture for latency while the
+  overlay serves the response. This is the compromise that makes the pass
+  condition's "sees its own user" and "latency within tolerance" hold in one
+  sequence.
+- Phase 5: sync tools in `virtual` mode resolve the response + overlay but
+  skip the latency sleep - there's no loop to `await asyncio.sleep` on and
+  `time.sleep` would block every other lane. The event still records the
+  replayed `latency_ms`; only the wall clock is unaffected. Async tools get
+  full fidelity. Documented on `wrap`.
+- Phase 5: added `ResponseSource.STUB` beyond the doc's
+  `real|fixture|schema|template`. When there's no fixture, no `outputSchema`
+  and no template, "we made something up with zero grounding" is a
+  meaningfully worse state than a schema-conformant synthesis - invariant 8
+  says mark every substitution, so it gets its own marker and its own line in
+  the fidelity summary.
+- Phase 5: contamination counting lives in the recorder, not the interceptor
+  (same reason as the phase 4 tool sink - interceptor can't import recorder).
+  The `ToolEvent` carries an `ungrounded_destructive` flag; the recorder
+  keeps the per-lane counter and sets `contaminated_at_step` to the seq where
+  it crossed the threshold, once, keeping the earlier steps valid.
+- Phase 5: overlay teardown is a `finally` in `_run_shadow` (and symmetrically
+  around the primary), so `discard_overlay` runs even when the invariant 6
+  check raises a `ModelCollisionError` out of the task.

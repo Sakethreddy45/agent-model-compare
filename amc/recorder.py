@@ -44,16 +44,19 @@ class Recorder:
         *,
         flush_interval: float = 0.25,
         attach_interceptor_sink: bool = True,
+        contamination_threshold: int = 3,
     ) -> None:
         self._store = store
         self._flush_interval = flush_interval
         self._attach_sink = attach_interceptor_sink
+        self._contamination_threshold = contamination_threshold
 
         self._queries: list[QueryRow] = []
         self._lanes: dict[str, LaneRow] = {}
         self._dirty: set[str] = set()
         self._events: list[EventRow] = []
         self._seq: dict[str, int] = {}
+        self._divergence: dict[str, int] = {}
 
         self._latest_query_id: str | None = None
         self._flush_task: asyncio.Task | None = None
@@ -192,15 +195,30 @@ class Recorder:
         self._lanes[lane_id] = replace(row, status=LaneStatus.INVALID)
         self._dirty.add(lane_id)
 
+    def _count_divergence(self, lane_id: str, seq: int) -> None:
+        """A destructive tool served with no grounding (no fixture) - the
+        lane's state has drifted from anything real. Past the threshold the
+        lane is contaminated from this step on; keep the earlier steps."""
+        n = self._divergence.get(lane_id, 0) + 1
+        self._divergence[lane_id] = n
+        if n < self._contamination_threshold:
+            return
+        row = self._lanes.get(lane_id)
+        if row is None or row.contaminated_at_step is not None:
+            return
+        self._lanes[lane_id] = replace(row, contaminated_at_step=seq)
+        self._dirty.add(lane_id)
+
     def record_tool_event(self, ev: ToolEvent) -> None:
         if ev.lane_id is None:
             return  # no lane in scope - unattributable; interceptor logged it
         if ev.lane_id not in self._lanes:
             self._orphan_lane(ev.lane_id, _role_from_str(ev.role))
+        seq = self._next_seq(ev.lane_id)
         self._events.append(EventRow(
             event_id=uuid4().hex,
             lane_id=ev.lane_id,
-            seq=self._next_seq(ev.lane_id),
+            seq=seq,
             node_name=None,
             kind=EventKind.TOOL,
             name=ev.name,
@@ -209,14 +227,14 @@ class Recorder:
             tokens_out=None,
             cached_tokens=None,
             latency_ms=ev.latency_ms,
-            latency_source=(
-                LatencySource.MEASURED if ev.latency_ms is not None else None
-            ),
-            response_source=ResponseSource.REAL if ev.executed else None,
+            latency_source=ev.latency_source,     # interceptor is authoritative
+            response_source=ev.response_source,
             isolation_mode=ev.isolation,
-            blocked=not ev.executed,
+            blocked=ev.blocked,
             error_type=ev.error_type,
         ))
+        if ev.ungrounded_destructive:
+            self._count_divergence(ev.lane_id, seq)
         self._ensure_flush_loop()
 
     def record_model_call(

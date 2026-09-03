@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Protocol, Sequence
 
 from .context import Lane, LaneStatus, Role, lane_scope
 from .provider import ModelCollisionError, assert_distinct_from_primary
+from .virtual import discard_overlay
 
 ShadowErrorHandler = Callable[[Lane, Exception], Any]
 ModelCollisionHandler = Callable[[Lane, ModelCollisionError], Any]
@@ -116,21 +117,24 @@ async def _run_shadow(s: _ShadowSpawn) -> None:
     but this lane's own error handler. Primary and sibling shadows are
     untouched. The invariant 6 check afterwards is intentionally not guarded."""
     try:
-        with lane_scope(s.lane):
-            result = await s.fn(*s.args, **s.kwargs)
-    except Exception as exc:      # noqa: BLE001 - deliberate shadow guard
+        try:
+            with lane_scope(s.lane):
+                result = await s.fn(*s.args, **s.kwargs)
+        except Exception as exc:      # noqa: BLE001 - deliberate shadow guard
+            if s.recorder is not None:
+                s.recorder.finish_lane(
+                    s.lane, status=LaneStatus.ERROR, error_type=type(exc).__name__
+                )
+            s.on_error(s.lane, exc)
+            return
+
         if s.recorder is not None:
             s.recorder.finish_lane(
-                s.lane, status=LaneStatus.ERROR, error_type=type(exc).__name__
+                s.lane, status=LaneStatus.OK, final_output=_stringify(result)
             )
-        s.on_error(s.lane, exc)
-        return
-
-    if s.recorder is not None:
-        s.recorder.finish_lane(
-            s.lane, status=LaneStatus.OK, final_output=_stringify(result)
-        )
-    _enforce_model_distinct(s)
+        _enforce_model_distinct(s)
+    finally:
+        discard_overlay(s.lane.id)   # teardown: drop the lane's copy-on-write delta
 
 
 def _spawn_shadow(s: _ShadowSpawn) -> asyncio.Task:
@@ -224,6 +228,8 @@ def shadow(
                         error_type=type(exc).__name__,
                     )
                 raise
+            finally:
+                discard_overlay(primary_lane.id)   # primary rarely has one; be symmetric
             if recorder is not None:
                 recorder.finish_lane(
                     primary_lane, status=LaneStatus.OK,
