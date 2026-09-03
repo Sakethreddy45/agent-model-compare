@@ -1,3 +1,5 @@
+from . import analysis
+from .analysis import load_query
 from .context import Lane, LaneStatus, Role, current_lane, lane_scope
 from .fidelity import FidelitySummary, render, summarise
 from .interceptor import wrap
@@ -53,4 +55,6 @@ __all__ = [
     "FidelitySummary",
     "summarise",
     "render",
+    "analysis",
+    "load_query",
 ]

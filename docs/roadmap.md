@@ -3,7 +3,7 @@
 One phase at a time. A phase is done when its pass condition holds, not when
 the code looks finished. Do not build ahead.
 
-**Current phase: 6**
+**Current phase: 7**
 
 ---
 
@@ -160,15 +160,35 @@ overlay-over-a-real-DB base (the base defaults to empty).
 
 ## Phase 6 — Analysis
 
-`analysis/` — pure functions over stored events. No network, no LLM.
+`amc/analysis/` — pure functions over stored events. No network, no LLM, no
+I/O beyond `load_query` reading a `Store`.
 
-- [ ] Tool set overlap, divergence point, argument match rate
-- [ ] Step counts, loops, retries, error rates
-- [ ] Cost via maintained price table; p50/p95 latency
-- [ ] Fidelity meta-metrics
+- [x] `runs.py`: `load_query(store, id) -> QueryRun` (query + lanes + ordered
+      events); everything downstream is pure over frozen rows.
+- [x] `selection.py`: tool set overlap (multiset + set Jaccard), divergence
+      point, argument match rate, `MatchMode` (strict / unordered / subset /
+      superset / node-edges). Node-keyed alignment - compare the k-th visit
+      to each `node_name`, not position 3 vs position 3; falls back to
+      positional when no event carries a node and the result says which.
+      Output is descriptive (a sentence naming the node and the two tools),
+      never a score.
+- [x] `efficiency.py`: step count, llm turns, distinct vs redundant calls,
+      consecutive-identical loops, per-tool retries / error rate.
+- [x] `cost.py`: `token_totals` (nulls counted, not summed as 0),
+      `cost_for_lane` computed at read time from tokens x a `PriceTable`;
+      separate input / cached-input / output rates; `price_version` on every
+      result; nothing stored. Bundled table is illustrative and swappable for
+      a maintained pricing library.
+- [x] `latency.py`: nearest-rank p50 / p95, measured and
+      measured+substituted reported separately, per-node and per-step
+      attribution.
+- [x] `fidelity_of(lane)` re-exposes the phase 5 fidelity meta-metrics.
 
 **Pass condition:** metrics computed from a fixture database match hand-checked
-values.
+values. Met: `tests/test_analysis.py` builds a fixed SQLite DB and asserts
+every metric against by-hand values (Jaccard 1/5, divergence at node `act2`
+step 2, a `fetch` loop, measured p50/p95 30/40ms, cost from a test price
+table, etc.).
 
 ---
 
@@ -324,3 +344,27 @@ writeup, and the writeup is worth more than the code.
 - Phase 5: overlay teardown is a `finally` in `_run_shadow` (and symmetrically
   around the primary), so `discard_overlay` runs even when the invariant 6
   check raises a `ModelCollisionError` out of the task.
+- Phase 6: "delegate the price table to a maintained library" (metrics.md)
+  collides with "core is stdlib-only, no deps without asking" (CLAUDE.md).
+  Resolved it the same way as the store: a `PriceTable` value type with a
+  `version` string and a bundled default, designed to be swapped for a
+  pricing library. `cost_for_lane` echoes `price_version` on every result so
+  an old number stays interpretable; no dollar figure is ever stored.
+- Phase 6: divergence alignment is node-keyed, not positional - bucket each
+  lane's tool calls by `node_name`, compare the k-th visit to each node in
+  first-appearance order. This re-syncs when one lane inserts an extra step,
+  which positional alignment can't. Degrades to positional only when nothing
+  has a `node_name`, and `DivergencePoint.alignment` records which was used.
+  Today the recorder rarely sets `node_name` on tool events (the interceptor
+  doesn't pass one), so most real runs hit the positional path until a
+  future phase threads node identity through the tool boundary.
+- Phase 6: nearest-rank percentile (`rank = ceil(p/100 * N)`), no
+  interpolation - `statistics.quantiles` would make a fixture's hand-checked
+  p95 ambiguous. Measured latency and substituted (replayed) latency get
+  separate p50/p95 and separate totals; they're never blended into one
+  figure (invariant 8).
+- Phase 6: `token_totals` counts missing token fields (`missing_in` /
+  `missing_out`) instead of summing `None` as 0, and `cost_for_lane` sets
+  `incomplete=True` and still returns a (partial, lower-bound) cost rather
+  than silently understating or refusing. Null stays distinct from zero all
+  the way through the metric.
