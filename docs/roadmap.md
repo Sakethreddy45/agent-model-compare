@@ -3,7 +3,7 @@
 One phase at a time. A phase is done when its pass condition holds, not when
 the code looks finished. Do not build ahead.
 
-**Current phase: 4**
+**Current phase: 5**
 
 ---
 
@@ -98,12 +98,24 @@ testable without executing" convention in CLAUDE.md.
 
 `recorder.py`, `store.py`
 
-- [ ] Event schema per @docs/architecture.md, including provenance fields
-- [ ] SQLite behind a small interface
-- [ ] Buffered writes so logging adds no latency to the primary
+- [x] Event schema per @docs/architecture.md, including provenance fields
+      (`LatencySource`, `ResponseSource`, `isolation_mode`, `blocked`)
+- [x] SQLite behind a small interface (`Store` protocol; `SqliteStore` is one
+      implementation, `DictStore` in the tests is another)
+- [x] Buffered writes so logging adds no latency to the primary — `record_*`
+      only append in memory; a background loop drains to the store inside
+      `asyncio.to_thread`
+- [x] `assert_distinct_from_primary` wired: fires automatically in `runner`
+      after each shadow finishes, against the recorder's per-lane
+      `model_observed`; collision marks the lane INVALID and, by default,
+      re-raises loudly into the shadow task
 
 **Pass condition:** a full run reconstructable from the store alone. Nulls
-distinguishable from zeros.
+distinguishable from zeros. Met: `tests/test_store.py` round-trips every row
+type and asserts `0` vs `None` survive on `tokens_in` / `cached_tokens` /
+`latency_ms`; `tests/test_recorder.py` runs a full `@shadow` query through a
+real `SqliteStore` and rebuilds query + both lanes + their LLM/tool events
+from the store alone.
 
 ---
 
@@ -198,6 +210,39 @@ writeup, and the writeup is worth more than the code.
   `.invoke()`. Documented on each adapter rather than special-cased in code -
   no LangChain import in `amc`, and those attribute names are exactly the
   kind of internal surface that moves without a deprecation notice.
+- Phase 4: `store` sits above `runner` in the dependency order (recorder
+  imports store; runner must not). But `runner` needs `LaneStatus` to record
+  lane outcomes and the invariant-6 wiring. Put `LaneStatus` in `context.py`
+  (lowest module, already owns `Lane`/`Role`) so both `store` and `runner`
+  can name it without an upward import. The recorder handle the runner holds
+  is a `RunRecorder` Protocol defined in `runner.py`; `recorder.Recorder`
+  satisfies it structurally and the runner never imports the recorder module.
+- Phase 4: the interceptor sits *below* the recorder, so it can't hand it a
+  store row. It emits a local frozen `ToolEvent` to a single module-level
+  sink (`interceptor.set_sink`), which the recorder registers on start and
+  clears on close. One recorder per process — the sink is a global.
+- Phase 4: buffered writes are a plain list/dict swap on the event-loop
+  thread plus `asyncio.to_thread(store.write, ...)` for the SQLite call. The
+  primary's hot path only ever appends; measured a 50-record burst + full
+  lane lifecycle against a bare run and the delta stayed well under 20ms
+  with zero synchronous writes.
+- Phase 4: SQLite NULL vs 0 — no column carries `DEFAULT 0` and only the
+  structural keys are `NOT NULL`; counts/latency are `... | None` dataclass
+  fields mapped straight to nullable columns. `latency_source` is left NULL
+  (not `MEASURED`) whenever `latency_ms` is NULL, so "unknown" never reads
+  as "measured 0ms".
+- Phase 4: `lanes` is written twice (start, then finish) via
+  `INSERT ... ON CONFLICT(lane_id) DO UPDATE`; the recorder keeps the
+  authoritative in-memory `LaneRow` and re-writes the whole snapshot each
+  drain, so a lane that starts and finishes between drains produces one row
+  and a lane still running at a drain produces a row with `ended_at` NULL —
+  useful for reconstructing a crashed run.
+- Phase 4: the invariant-6 check runs *outside* `_run_shadow`'s
+  invariant-2 `except Exception` guard on purpose. A `ModelCollisionError`
+  must not be swallowed like an ordinary shadow failure — the default
+  handler prints to stderr and re-raises into the task so asyncio surfaces
+  it. `on_model_collision` lets a caller route it elsewhere but the lane is
+  still marked INVALID in the store either way.
 - Added `tests/test_provider_integration.py`: one test per provider, each
   `pytest.importorskip`-ing its own SDK, driving a real client through
   `httpx.MockTransport` (Gemini) or the vendored `httpx2.MockTransport`

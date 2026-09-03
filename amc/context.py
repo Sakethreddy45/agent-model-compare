@@ -10,6 +10,13 @@ class Role(str, Enum):
     SHADOW = "shadow"
 
 
+class LaneStatus(str, Enum):
+    RUNNING = "running"   # started, not yet finished (or the process died mid-run)
+    OK = "ok"             # ran to completion
+    ERROR = "error"       # the agent callable raised
+    INVALID = "invalid"   # invariant 6: observed model collided with the primary's
+
+
 @dataclass(frozen=True)
 class Lane:
     id: str
