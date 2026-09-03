@@ -4,6 +4,7 @@ import time
 import pytest
 
 from amc.context import Lane, LaneStatus, Role, lane_scope
+from amc.fidelity import render, summarise
 from amc.interceptor import wrap
 from amc.policy import Isolation, classify
 from amc.provenance import LatencySource, ResponseSource
@@ -271,6 +272,82 @@ async def test_lane_tool_latency_within_tolerance_of_primary_for_same_sequence()
         assert srcs["create_user"] == (ResponseSource.FIXTURE, LatencySource.REPLAYED)
         assert srcs["get_user"][1] is LatencySource.REPLAYED
         assert srcs["read_docs"] == (ResponseSource.REAL, LatencySource.MEASURED)
+    discard_overlay("q1-s")
+    discard_overlay("q1-p")
+
+
+@pytest.mark.asyncio
+async def test_shadow_diverging_to_an_unseen_tool_gets_no_latency_not_a_wrong_one():
+    # The primary only ever calls `search`. The shadow takes a different path
+    # and calls `fetch`, which the primary never touched - so there is no
+    # observation to replay. Strategy (a) must yield None here, not borrow
+    # `search`'s latency or invent a zero.
+    async def search(q):
+        await asyncio.sleep(0.04)
+        return {"hits": ["d1", "d2"]}
+
+    async def fetch(doc_id):
+        await asyncio.sleep(0.04)          # slow for real - but the shadow never runs it
+        return {"id": doc_id, "body": "REAL-CONTENT"}
+
+    policies = classify(["search", "fetch"],
+                        config={"search": "virtual", "fetch": "virtual"})
+    specs = {
+        "search": VirtualSpec(entity="query", op="read", destructive=False),
+        "fetch": VirtualSpec(
+            entity="doc", op="read", id_arg="doc_id", destructive=False,
+            output_schema={"type": "object", "properties": {
+                "id": {"type": "string"}, "body": {"type": "string"}}},
+        ),
+    }
+    s_search = wrap(search, "search", policies, specs=specs)
+    s_fetch = wrap(fetch, "fetch", policies, specs=specs)
+
+    store = SqliteStore(":memory:")
+    async with Recorder(store, flush_interval=1000, contamination_threshold=99) as rec:
+        rec.start_query("q1", input="x", was_sampled=True, primary_lane_id="q1-p")
+        primary = Lane("q1-p", Role.PRIMARY, None)
+        shadow_lane = Lane("q1-s", Role.SHADOW, "m")
+        rec.start_lane(primary, query_id="q1")
+        rec.start_lane(shadow_lane, query_id="q1")
+
+        with lane_scope(primary):
+            await s_search(q="signups")        # primary's only call
+        with lane_scope(shadow_lane):
+            fetched = await s_fetch(doc_id="d1")   # divergent: primary never called fetch
+
+        rec.finish_lane(primary, status=LaneStatus.OK)
+        rec.finish_lane(shadow_lane, status=LaneStatus.OK)
+        await rec.flush()
+
+        # a `search` fixture exists with a real, non-trivial latency ...
+        fx = get_fixture_store().lookup("search", (), {"q": "signups"})
+        assert fx is not None and fx.latency_ms >= 35
+
+        # ... and the divergent `fetch` call neither borrows it nor fakes a 0
+        (fetch_ev,) = [e for e in store.read_events("q1-s")
+                       if e.kind is EventKind.TOOL and e.name == "fetch"]
+        assert fetch_ev.latency_ms is None
+        assert fetch_ev.latency_source is None
+        assert fetch_ev.latency_ms != fx.latency_ms
+        assert fetch_ev.response_source is ResponseSource.SCHEMA
+        assert fetched == {"id": "", "body": ""}      # synthesised, not REAL-CONTENT
+
+        # the fidelity summary shows the substitution rather than hiding it
+        shadow_row = next(l for l in store.read_lanes("q1") if l.role is Role.SHADOW)
+        summary = summarise(shadow_row, store.read_events("q1-s"))
+        assert summary.tool_calls == 1
+        assert summary.schema_synthesised == 1
+        assert summary.executed_real == 0
+        assert summary.from_fixture == 0
+        assert summary.latency_substituted_ms == 0.0   # nothing was legitimately replayed
+        assert summary.latency_measured_ms == 0.0
+        assert summary.real_fraction == 0.0
+        assert summary.is_low_fidelity() is True
+
+        text = render(summary)
+        assert "schema-synthesised:" in text
+        assert "LOW FIDELITY" in text
     discard_overlay("q1-s")
     discard_overlay("q1-p")
 
